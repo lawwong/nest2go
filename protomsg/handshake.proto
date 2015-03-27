@@ -1,0 +1,29 @@
+package protomsg;
+
+message HandshakeReq {
+	enum Mode {
+		PEER = 0;
+		NEW_AGENT = 1;
+		AGENT = 2;
+	}
+	required Mode mode = 1;
+	required string app = 2;
+	required int32 challenge = 3;
+
+	optional bytes session = 4;	// mode = AGENT
+	optional int64 utc_time = 5;	// mode = AGENT, prevent replay attack
+
+	// used when port rsa has set
+	optional bytes aes_key = 6; // mode = PEER/NEW_AGENT
+	optional bytes aes_iv = 7;
+}
+
+message HandshakeRes {
+	required int32 challenge = 1;
+
+	optional bytes session = 2;	// mode = NEW_AGENT
+
+	// used when port rsa has set
+	optional bytes aes_key = 3; // mode = PEER/NEW_AGENT
+	optional bytes aes_iv = 4;
+}
