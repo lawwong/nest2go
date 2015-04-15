@@ -11,212 +11,351 @@ import (
 	"github.com/gorilla/websocket"
 	. "github.com/lawwong/nest2go/protomsg"
 	"github.com/lawwong/nest2go/uuid"
+	"time"
 )
-
-type PeerListener interface {
-}
-
-const BUFFER_SIZE = 256
 
 type PeerBase struct {
 	ws  *websocket.Conn
 	app *AppBase
 
-	listener PeerListener
+	decodeKey    []byte
+	encodeKey    []byte
+	decodeStream cipher.Stream
+	encodeStream cipher.Stream
 
-	rsaKey    *rsa.PrivateKey
-	decodeKey []byte
-	encodeKey []byte
+	opSerial uint32
 
-	read  chan []byte
-	write chan []byte
-	stop  chan struct{}
+	eMux *eventMux
+	oMux *opReqMux
+
+	writeMsg chan []byte
+	writeErr chan error
+
+	*closable
 }
 
-func newPeerBase(ws *websocket.Conn, app *AppBase, pk *rsa.PrivateKey) *PeerBase {
+func newPeerBase(ws *websocket.Conn, app *AppBase, privateKey *rsa.PrivateKey) *PeerBase {
 	p := &PeerBase{
-		ws:     ws,
-		app:    app,
-		rsaKey: pk,
+		ws:  ws,
+		app: app,
 
-		read:  make(chan []byte, BUFFER_SIZE),
-		write: make(chan []byte, BUFFER_SIZE),
-		stop:  make(chan struct{}),
+		writeMsg: make(chan []byte),
+		writeErr: make(chan error),
+
+		closable: newClosable(),
 	}
-	go p.runReader()
+	p.HandleCloseFunc(func() {})
+	go p.runHandshake(privateKey)
 	return p
+}
+
+func (p *PeerBase) runHandshake(privateKey *rsa.PrivateKey) {
+	var data []byte
+	var err error
+	var notifyAppFunc func()
+	handshakeOk := make(chan Signal)
+	defer printErr(p.app.log, &err, "PeerBase.runHandshake", p.ws.LocalAddr(), p.ws.RemoteAddr())
+	defer func() {
+		if err != nil {
+			p.Close()
+		} else {
+			close(handshakeOk)
+		}
+	}()
+
+	go func() {
+		select {
+		case <-handshakeOk:
+		case <-time.After(2 * time.Second):
+			p.Close()
+		}
+	}()
+
+	if _, data, err = p.ws.ReadMessage(); err == nil {
+		// do handshake
+		if privateKey != nil {
+			// decode with rsa private key
+			data, err = rsa.DecryptOAEP(sha1.New(), nil, privateKey, data, nil)
+			if err != nil {
+				return
+			}
+		}
+		// parse message
+		hsReq := new(HandshakeReq)
+		err = proto.Unmarshal(data, hsReq)
+		if err != nil {
+			return
+		}
+		// build HandshakeRes
+		hsRes := new(HandshakeRes)
+		// client should test if it's equal
+		hsRes.Challenge = proto.Int32(hsReq.GetChallenge())
+		// switch mode
+		switch hsReq.GetMode() {
+		case HandshakeReq_PEER:
+			p.eMux = newEventMux()
+			p.oMux = newOpReqMux()
+
+			// notify new peer to app
+			notifyAppFunc = func() {
+				select {
+				case p.app.onpeer <- p:
+				case <-p.app.CloseChan():
+					p.Close()
+				case <-p.CloseChan():
+				}
+			}
+
+			if privateKey != nil {
+				p.encodeKey = hsReq.GetAesKey()
+				p.decodeKey = make([]byte, len(p.encodeKey))
+				_, err = rand.Read(p.decodeKey)
+				if err != nil {
+					return
+				}
+
+				hsRes.AesKey = p.decodeKey
+			}
+		case HandshakeReq_NEW_AGENT:
+			agent := p.app.newAgent()
+			agent.setPeer(p)
+			// notify new agent to app
+			notifyAppFunc = func() {
+				select {
+				case p.app.onagent <- agent:
+				case <-p.app.CloseChan():
+					p.Close()
+				case <-p.CloseChan():
+				}
+			}
+
+			hsRes.Session = agent.session.ByteSlice()
+
+			if privateKey != nil {
+				p.encodeKey = hsReq.GetAesKey()
+				p.decodeKey = make([]byte, len(p.encodeKey))
+				_, err = rand.Read(p.decodeKey)
+				if err != nil {
+					return
+				}
+
+				hsRes.AesKey = p.decodeKey
+			}
+		case HandshakeReq_AGENT:
+			var session *uuid.Uuid
+			*session, err = uuid.FromByteSlice(hsReq.GetSession())
+			if err != nil {
+				return
+			}
+
+			agent, err := p.app.verifyAgent(session, hsReq.GetSerialNum())
+			if err != nil {
+				return
+			}
+
+			agent.setPeer(p)
+		}
+
+		// make cipher stream
+		if privateKey != nil {
+			encodeBlock, err := aes.NewCipher(p.encodeKey)
+			if err != nil {
+				return
+			}
+
+			decodeBlock, err := aes.NewCipher(p.decodeKey)
+			if err != nil {
+				return
+			}
+
+			encodeIv := hsReq.GetAesIv()
+			if len(encodeIv) != aes.BlockSize {
+				err = fmt.Errorf("IV length must equal block size!")
+				return
+			}
+
+			decodeIv := make([]byte, aes.BlockSize)
+			_, err = rand.Read(decodeIv)
+			if err != nil {
+				return
+			}
+
+			// FIXME : thread safe?
+			p.encodeStream = cipher.NewCTR(encodeBlock, encodeIv)
+			p.decodeStream = cipher.NewCTR(decodeBlock, decodeIv)
+
+			hsRes.AesIv = decodeIv
+		}
+
+		data, err = proto.Marshal(hsRes)
+		if err != nil {
+			return
+		}
+
+		if p.encodeStream != nil {
+			p.encodeStream.XORKeyStream(data, data)
+		}
+
+		go p.runWriter(data)
+
+		if notifyAppFunc != nil {
+			// app can handle event/op, send event/op, close peer/agent
+			notifyAppFunc()
+		}
+
+		// try send handshake response
+		p.writeMsg <- nil
+		<-p.writeErr
+
+		go p.runReader()
+	}
 }
 
 func (p *PeerBase) runReader() {
 	var data []byte
 	var err error
-	var handshake bool
-	var decodeStream cipher.Stream
-	var encodeStream cipher.Stream
-	defer p.app.server.printErr(&err, "PeerBase.runReader", p.ws.LocalAddr(), p.ws.RemoteAddr())
+	msg := new(DataMsg)
+	emptyData := make([]byte, 0)
+	for {
+		if err != nil {
+			p.app.log.Warnf("%q peer %q : %s", p.ws.LocalAddr(), p.ws.RemoteAddr(), err)
+		}
 
-	for _, data, err = p.ws.ReadMessage(); err != nil; {
-		if !handshake {
-			// do handshake
-			if p.useSecure() {
-				// decode by rsa private key
-				data, err = rsa.DecryptOAEP(sha1.New(), nil, p.rsaKey, data, nil)
-				if err != nil {
-					break
-				}
+		_, data, err = p.ws.ReadMessage()
+		if err != nil {
+			break
+		}
+
+		if p.decodeStream != nil {
+			p.decodeStream.XORKeyStream(data, data)
+		}
+
+		err = proto.Unmarshal(data, msg)
+		if err != nil {
+			continue
+		}
+
+		switch msg.GetType() {
+		case DataMsg_EVENT:
+			if p.eMux == nil {
+				err = ErrAgentEventNotSupport
+			} else {
+				err = p.eMux.serveEvent(msg.GetCode(), msg.GetData())
 			}
-			// parse message
-			hsReq := new(HandshakeReq)
-			err = proto.Unmarshal(data, hsReq)
+		case DataMsg_OP:
+			err = p.oMux.serveOpReq(p, msg.GetCode(), msg.GetOpSerial(), msg.GetData())
 			if err != nil {
-				break
-			}
-			// build HandshakeRes
-			hsRes := new(HandshakeRes)
-			// client should test this field if it's equal
-			hsRes.Challenge = proto.Int32(hsReq.GetChallenge())
-			// switch mode
-			switch hsReq.GetMode() {
-			case HandshakeReq_PEER:
-				if l := p.app.listener.IncomingPeer(p); l == nil {
-					err = fmt.Errorf("Peer reject by app!")
-					break
-				} else {
-					p.listener = l
+				*msg = DataMsg{
+					Type:     DataMsg_WRONG_OP_CODE.Enum(),
+					Code:     proto.Int32(msg.GetCode()),
+					OpSerial: proto.Uint32(msg.GetOpSerial()),
+					Data:     emptyData,
 				}
-
-				if p.useSecure() {
-					p.decodeKey = hsReq.GetAesKey()
-					p.encodeKey = make([]byte, len(p.decodeKey))
-					_, err = rand.Read(p.encodeKey)
-					if err != nil {
-						return
-					}
-
-					hsRes.AesKey = p.encodeKey
-				}
-			case HandshakeReq_NEW_AGENT:
-				agent := p.app.newAgent(hsReq.GetUtcTime())
-				// TODO
-				if agent == nil {
-					err = fmt.Errorf("Agent reject by app!")
-					break
-				}
-
-				agent.setPeer(p)
-				//p.listener =
-
-				hsRes.Session = agent.session.ByteSlice()
-
-				if p.useSecure() {
-					p.decodeKey = hsReq.GetAesKey()
-					p.encodeKey = make([]byte, len(p.decodeKey))
-					_, err = rand.Read(p.encodeKey)
-					if err != nil {
-						return
-					}
-
-					hsRes.AesKey = p.encodeKey
-				}
-			case HandshakeReq_AGENT:
-				session, err := uuid.FromByteSlice(hsReq.GetSession())
-				if err != nil {
-					break
-				}
-
-				agent, err := p.app.verifyAgent(session, hsReq.GetUtcTime())
-				if err != nil {
-					break
-				}
-
-				oldPeer := agent.setPeer(p)
-
-				if p.useSecure() {
-					p.decodeKey = oldPeer.decodeKey
-					p.encodeKey = oldPeer.encodeKey
+				data, _ = proto.Marshal(msg)
+				select {
+				case p.writeMsg <- data:
+					<-p.writeErr
+				case <-p.CloseChan():
 				}
 			}
-
-			// build cipher stream
-			if p.useSecure() {
-				decodeBlock, err := aes.NewCipher(p.decodeKey)
-				if err != nil {
-					return
-				}
-
-				encodeBlock, err := aes.NewCipher(p.encodeKey)
-				if err != nil {
-					return
-				}
-
-				decodeIv := hsReq.GetAesIv()
-				if len(decodeIv) != aes.BlockSize {
-					err = fmt.Errorf("IV length must equal block size!")
-					break
-				}
-
-				encodeIv := make([]byte, aes.BlockSize)
-				_, err = rand.Read(encodeIv)
-				if err != nil {
-					break
-				}
-
-				decodeStream = cipher.NewCTR(decodeBlock, decodeIv)
-				encodeStream = cipher.NewCTR(encodeBlock, encodeIv)
-
-				hsRes.AesIv = encodeIv
-			}
-
-			data, err = proto.Marshal(hsRes)
-			if err != nil {
-				break
-			}
-
-			go p.runWriter(encodeStream)
-
-			p.write <- data
-
-			handshake = true
-		} else {
-			if decodeStream != nil {
-				decodeStream.XORKeyStream(data, data)
-			}
-
 		}
 	}
-	p.ws.Close()
-	close(p.write)
-	//close(p.stop)
+	p.app.log.Infof("%q peer %q : %s", p.ws.LocalAddr(), p.ws.RemoteAddr(), err)
+	p.Close()
 }
 
-func (p *PeerBase) runWriter(encodeStream cipher.Stream) {
-	for data := range p.write {
-		if encodeStream != nil {
-			encodeStream.XORKeyStream(data, data)
-		}
-
-		if err := p.ws.WriteMessage(websocket.BinaryMessage, data); err != nil {
-			p.app.server.log.Warnf("PeerBase.runWriter(%s,%s,) %s", p.ws.LocalAddr(), p.ws.RemoteAddr(), err)
-		}
-	}
-}
-
-func (p *PeerBase) run() {
+func (p *PeerBase) runWriter(hsResData []byte) {
+	var handshakeOk bool
 	for {
 		select {
-		case <-p.stop:
+		case data := <-p.writeMsg:
+			if !handshakeOk {
+				// make sure handshake response sent before first message,
+				// and let application have a chance to handle event/op before
+				// client received handshake response,
+				// hsResData should be encrypted if needed
+				err := p.ws.WriteMessage(websocket.BinaryMessage, hsResData)
+				if err != nil {
+					p.writeErr <- err
+					continue
+				} else {
+					hsResData = nil
+					handshakeOk = true
+				}
+			}
+			if len(data) == 0 {
+				p.writeErr <- nil
+			} else {
+				if p.encodeStream != nil {
+					p.encodeStream.XORKeyStream(data, data)
+				}
+				p.writeErr <- p.ws.WriteMessage(websocket.BinaryMessage, data)
+			}
+		case <-p.CloseChan():
 			break
 		}
 	}
-	close(p.write)
+	close(p.writeErr)
 }
 
-func (p *PeerBase) useSecure() bool {
-	return p.rsaKey != nil
+func (p *PeerBase) WriteEvent(code int32, data []byte) error {
+	msg := DataMsg{
+		Type: DataMsg_EVENT.Enum(),
+		Code: proto.Int32(code),
+		Data: data,
+	}
+	data, err := proto.Marshal(&msg)
+	if err != nil {
+		return err
+	}
+	select {
+	case p.writeMsg <- data:
+		return <-p.writeErr
+	case <-p.CloseChan():
+		return ErrServiceClosed
+	}
 }
 
-func (p *PeerBase) Close() (err error) {
-	defer p.app.server.printErr(&err, "PeerBase.Close", p.ws.LocalAddr(), p.ws.RemoteAddr())
-	err = p.ws.Close()
-	return
+func (p *PeerBase) WriteOpRes(code int32, serial uint32, data []byte) error {
+	msg := DataMsg{
+		Type:     DataMsg_OP.Enum(),
+		Code:     proto.Int32(code),
+		OpSerial: proto.Uint32(serial),
+		Data:     data,
+	}
+	data, err := proto.Marshal(&msg)
+	if err != nil {
+		return err
+	}
+	select {
+	case p.writeMsg <- data:
+		return <-p.writeErr
+	case <-p.CloseChan():
+		return ErrServiceClosed
+	}
+}
+
+func (p *PeerBase) HandleEvent(code int32, handler EventHandler) {
+	p.eMux.HandleEvent(code, handler)
+}
+
+func (p *PeerBase) HandleEventFunc(code int32, handler EventHandlerFunc) {
+	p.eMux.HandleEventFunc(code, handler)
+}
+
+func (p *PeerBase) HandleOpReq(code int32, handler OpReqHandler) {
+	p.oMux.HandleOpReq(code, handler)
+}
+
+func (p *PeerBase) HandleOpReqFunc(code int32, handler OpReqHandlerFunc) {
+	p.oMux.HandleOpReqFunc(code, handler)
+}
+
+func (p *PeerBase) HandleClose(handler CloseHandler) {
+	p.closable.HandleCloseFunc(func() {
+		if err := p.ws.Close(); err != nil {
+			p.app.log.Infof("%q peer %q closed. %s", p.ws.LocalAddr(), p.ws.RemoteAddr(), err)
+		}
+		handler.HandleClose()
+	})
 }

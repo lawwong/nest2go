@@ -1,34 +1,28 @@
-package nest2go
+package log
 
 import (
 	"fmt"
+	. "github.com/lawwong/nest2go/protomsg"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
-)
-
-type FileSepDur int
-
-const (
-	FileSepDurNone FileSepDur = iota
-	FileSepDurYear
-	FileSepDurMounth
-	FileSepDurDay
-	FileSepDurHour
-	FileSepDurMinute
-	FileSepDurSecond
 )
 
 const logFileExt = ".log"
 
 type filePathInfo struct {
-	path string
-	dur  FileSepDur
+	dir  string
+	name string
+	sep  Config_LogSepTime
 }
 
 type FileLogger struct {
+	levelMut sync.RWMutex
+	level    LogLevel
+
+	pathInfo       filePathInfo
 	filePathPrefix string
-	sepDur         FileSepDur
 
 	filePath chan filePathInfo
 	rec      chan *LogRecord
@@ -45,26 +39,67 @@ func NewFileLogger() *FileLogger {
 	return fl
 }
 
-func (w *FileLogger) SetFilePath(dir, name string, dur FileSepDur) {
-	w.filePath <- filePathInfo{
-		path: filepath.Join(dir, name),
-		dur:  dur,
+func (w *FileLogger) Dir() string {
+	return w.pathInfo.dir
+}
+
+func (w *FileLogger) Name() string {
+	return w.pathInfo.name
+}
+
+func (w *FileLogger) Sep() Config_LogSepTime {
+	return w.pathInfo.sep
+}
+
+func (w *FileLogger) Level() LogLevel {
+	w.levelMut.RLock()
+	defer w.levelMut.RUnlock()
+	return w.level
+}
+
+func (w *FileLogger) SetLevel(l LogLevel) {
+	w.levelMut.Lock()
+	defer w.levelMut.Unlock()
+	w.level = l
+}
+
+func (w *FileLogger) SetFilePath(dir, name string) {
+	info := filePathInfo{
+		dir:  dir,
+		name: name,
+		sep:  w.pathInfo.sep,
+	}
+	select {
+	case w.filePath <- info:
+	case <-w.quit:
+	}
+}
+
+func (w *FileLogger) SetFileSepTime(dur Config_LogSepTime) {
+	info := filePathInfo{
+		dir:  w.pathInfo.dir,
+		name: w.pathInfo.name,
+		sep:  dur,
+	}
+	select {
+	case w.filePath <- info:
+	case <-w.quit:
 	}
 }
 
 func (w *FileLogger) needSepFile(last, cur time.Time) bool {
-	switch w.sepDur {
-	case FileSepDurYear:
+	switch w.pathInfo.sep {
+	case Config_YEAR:
 		return last.Year() != cur.Year()
-	case FileSepDurMounth:
+	case Config_MOUNTH:
 		return last.Month() != cur.Month() || last.Year() != cur.Year()
-	case FileSepDurDay:
+	case Config_DAY:
 		return last.Day() != cur.Day() || cur.Sub(last) > 24*time.Hour
-	case FileSepDurHour:
+	case Config_HOUR:
 		return last.Hour() != cur.Hour() || cur.Sub(last) > time.Hour
-	case FileSepDurMinute:
+	case Config_MINUTE:
 		return last.Minute() != cur.Minute() || cur.Sub(last) > time.Minute
-	case FileSepDurSecond:
+	case Config_SECOND:
 		return last.Second() != cur.Second() || cur.Sub(last) > time.Second
 	}
 	return false
@@ -72,18 +107,18 @@ func (w *FileLogger) needSepFile(last, cur time.Time) bool {
 
 func (w *FileLogger) filePathWithTime(t time.Time) string {
 	p := w.filePathPrefix
-	switch w.sepDur {
-	case FileSepDurYear:
+	switch w.pathInfo.sep {
+	case Config_YEAR:
 		p += t.Format("_06")
-	case FileSepDurMounth:
+	case Config_MOUNTH:
 		p += t.Format("_0601")
-	case FileSepDurDay:
+	case Config_DAY:
 		p += t.Format("_060102")
-	case FileSepDurHour:
+	case Config_HOUR:
 		p += t.Format("_060102_15")
-	case FileSepDurMinute:
+	case Config_MINUTE:
 		p += t.Format("_060102_1504")
-	case FileSepDurSecond:
+	case Config_SECOND:
 		p += t.Format("_060102_150405")
 	}
 	return p + logFileExt
@@ -98,10 +133,10 @@ func (w *FileLogger) run() {
 
 	for {
 		select {
-		case fn := <-w.filePath:
-			if w.filePathPrefix != fn.path || w.sepDur != fn.dur {
-				w.filePathPrefix = fn.path
-				w.sepDur = fn.dur
+		case info := <-w.filePath:
+			if w.pathInfo != info {
+				w.pathInfo = info
+				w.filePathPrefix = filepath.Join(info.dir, info.name)
 				lastRecTime = time.Time{}
 				err = nil
 			}
@@ -180,11 +215,19 @@ func (w *FileLogger) Errorf(format string, args ...interface{}) {
 }
 
 func (w *FileLogger) log(lv LogLevel, args ...interface{}) {
-	w.logWrite(lv, fmt.Sprint(args...))
+	w.levelMut.RLock()
+	defer w.levelMut.RUnlock()
+	if lv >= w.level {
+		w.logWrite(lv, fmt.Sprint(args...))
+	}
 }
 
 func (w *FileLogger) logf(lv LogLevel, format string, args ...interface{}) {
-	w.logWrite(lv, fmt.Sprintf(format, args...))
+	w.levelMut.RLock()
+	defer w.levelMut.RUnlock()
+	if lv >= w.level {
+		w.logWrite(lv, fmt.Sprintf(format, args...))
+	}
 }
 
 // This is the ConsoleLogWriter's output method.  This will block if the output

@@ -11,9 +11,10 @@ message HandshakeReq {
 	required int32 challenge = 3;
 
 	optional bytes session = 4;	// mode = AGENT
-	optional int64 utc_time = 5;	// mode = AGENT, prevent replay attack
+	// prevent replay attack, start with 0
+	optional uint32 serial_num = 5;	// mode = AGENT
 
-	// used when port rsa has set
+	// used when port rsa has set, AES CTR any key length
 	optional bytes aes_key = 6; // mode = PEER/NEW_AGENT
 	optional bytes aes_iv = 7;
 }

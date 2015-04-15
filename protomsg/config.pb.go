@@ -7,6 +7,7 @@ Package protomsg is a generated protocol buffer package.
 
 It is generated from these files:
 	config.proto
+	datamsg.proto
 	handshake.proto
 
 It has these top-level messages:
@@ -21,20 +22,70 @@ import math "math"
 var _ = proto.Marshal
 var _ = math.Inf
 
+type Config_LogSepTime int32
+
+const (
+	Config_NONE   Config_LogSepTime = 0
+	Config_YEAR   Config_LogSepTime = 1
+	Config_MOUNTH Config_LogSepTime = 2
+	Config_DAY    Config_LogSepTime = 3
+	Config_HOUR   Config_LogSepTime = 4
+	Config_MINUTE Config_LogSepTime = 5
+	Config_SECOND Config_LogSepTime = 6
+)
+
+var Config_LogSepTime_name = map[int32]string{
+	0: "NONE",
+	1: "YEAR",
+	2: "MOUNTH",
+	3: "DAY",
+	4: "HOUR",
+	5: "MINUTE",
+	6: "SECOND",
+}
+var Config_LogSepTime_value = map[string]int32{
+	"NONE":   0,
+	"YEAR":   1,
+	"MOUNTH": 2,
+	"DAY":    3,
+	"HOUR":   4,
+	"MINUTE": 5,
+	"SECOND": 6,
+}
+
+func (x Config_LogSepTime) Enum() *Config_LogSepTime {
+	p := new(Config_LogSepTime)
+	*p = x
+	return p
+}
+func (x Config_LogSepTime) String() string {
+	return proto.EnumName(Config_LogSepTime_name, int32(x))
+}
+func (x *Config_LogSepTime) UnmarshalJSON(data []byte) error {
+	value, err := proto.UnmarshalJSONEnum(Config_LogSepTime_value, data, "Config_LogSepTime")
+	if err != nil {
+		return err
+	}
+	*x = Config_LogSepTime(value)
+	return nil
+}
+
 type Config struct {
-	ServerName       *string        `protobuf:"bytes,1,opt,name=server_name,def=nest2go" json:"server_name,omitempty"`
-	LogDir           *string        `protobuf:"bytes,2,opt,name=log_dir,def=." json:"log_dir,omitempty"`
-	OpenPorts        []*Config_Port `protobuf:"bytes,3,rep,name=open_ports" json:"open_ports,omitempty"`
-	Apps             []*Config_App  `protobuf:"bytes,4,rep,name=apps" json:"apps,omitempty"`
-	XXX_unrecognized []byte         `json:"-"`
+	ServerName       *string            `protobuf:"bytes,1,opt,name=server_name,def=server" json:"server_name,omitempty"`
+	LogDir           *string            `protobuf:"bytes,2,opt,name=log_dir,def=log/" json:"log_dir,omitempty"`
+	LogSepTime       *Config_LogSepTime `protobuf:"varint,3,opt,name=log_sep_time,enum=protomsg.Config_LogSepTime,def=0" json:"log_sep_time,omitempty"`
+	Ports            []*Config_Port     `protobuf:"bytes,4,rep,name=ports" json:"ports,omitempty"`
+	Apps             []*Config_App      `protobuf:"bytes,5,rep,name=apps" json:"apps,omitempty"`
+	XXX_unrecognized []byte             `json:"-"`
 }
 
 func (m *Config) Reset()         { *m = Config{} }
 func (m *Config) String() string { return proto.CompactTextString(m) }
 func (*Config) ProtoMessage()    {}
 
-const Default_Config_ServerName string = "nest2go"
-const Default_Config_LogDir string = "."
+const Default_Config_ServerName string = "server"
+const Default_Config_LogDir string = "log/"
+const Default_Config_LogSepTime Config_LogSepTime = Config_NONE
 
 func (m *Config) GetServerName() string {
 	if m != nil && m.ServerName != nil {
@@ -50,9 +101,16 @@ func (m *Config) GetLogDir() string {
 	return Default_Config_LogDir
 }
 
-func (m *Config) GetOpenPorts() []*Config_Port {
+func (m *Config) GetLogSepTime() Config_LogSepTime {
+	if m != nil && m.LogSepTime != nil {
+		return *m.LogSepTime
+	}
+	return Default_Config_LogSepTime
+}
+
+func (m *Config) GetPorts() []*Config_Port {
 	if m != nil {
-		return m.OpenPorts
+		return m.Ports
 	}
 	return nil
 }
@@ -68,7 +126,7 @@ type Config_Port struct {
 	Addr             *string `protobuf:"bytes,1,req,name=addr" json:"addr,omitempty"`
 	TlsCertFile      *string `protobuf:"bytes,2,opt,name=tls_cert_file" json:"tls_cert_file,omitempty"`
 	TlsKeyFile       *string `protobuf:"bytes,3,opt,name=tls_key_file" json:"tls_key_file,omitempty"`
-	RsaPrivatePem    *string `protobuf:"bytes,4,opt,name=rsa_private_pem" json:"rsa_private_pem,omitempty"`
+	RsaKeyPem        *string `protobuf:"bytes,4,opt,name=rsa_key_pem" json:"rsa_key_pem,omitempty"`
 	XXX_unrecognized []byte  `json:"-"`
 }
 
@@ -97,18 +155,18 @@ func (m *Config_Port) GetTlsKeyFile() string {
 	return ""
 }
 
-func (m *Config_Port) GetRsaPrivatePem() string {
-	if m != nil && m.RsaPrivatePem != nil {
-		return *m.RsaPrivatePem
+func (m *Config_Port) GetRsaKeyPem() string {
+	if m != nil && m.RsaKeyPem != nil {
+		return *m.RsaKeyPem
 	}
 	return ""
 }
 
 type Config_App struct {
-	TypeName         *string  `protobuf:"bytes,1,req,name=type_name" json:"type_name,omitempty"`
-	IdName           *string  `protobuf:"bytes,2,req,name=id_name" json:"id_name,omitempty"`
-	SetupString      *string  `protobuf:"bytes,3,opt,name=setup_string,def=" json:"setup_string,omitempty"`
-	ListenPortAddr   []string `protobuf:"bytes,4,rep,name=listen_port_addr" json:"listen_port_addr,omitempty"`
+	Name             *string  `protobuf:"bytes,1,req,name=name" json:"name,omitempty"`
+	Type             *string  `protobuf:"bytes,2,req,name=type" json:"type,omitempty"`
+	SetupString      *string  `protobuf:"bytes,3,opt,name=setup_string" json:"setup_string,omitempty"`
+	UsePorts         []string `protobuf:"bytes,4,rep,name=use_ports" json:"use_ports,omitempty"`
 	XXX_unrecognized []byte   `json:"-"`
 }
 
@@ -116,16 +174,16 @@ func (m *Config_App) Reset()         { *m = Config_App{} }
 func (m *Config_App) String() string { return proto.CompactTextString(m) }
 func (*Config_App) ProtoMessage()    {}
 
-func (m *Config_App) GetTypeName() string {
-	if m != nil && m.TypeName != nil {
-		return *m.TypeName
+func (m *Config_App) GetName() string {
+	if m != nil && m.Name != nil {
+		return *m.Name
 	}
 	return ""
 }
 
-func (m *Config_App) GetIdName() string {
-	if m != nil && m.IdName != nil {
-		return *m.IdName
+func (m *Config_App) GetType() string {
+	if m != nil && m.Type != nil {
+		return *m.Type
 	}
 	return ""
 }
@@ -137,12 +195,13 @@ func (m *Config_App) GetSetupString() string {
 	return ""
 }
 
-func (m *Config_App) GetListenPortAddr() []string {
+func (m *Config_App) GetUsePorts() []string {
 	if m != nil {
-		return m.ListenPortAddr
+		return m.UsePorts
 	}
 	return nil
 }
 
 func init() {
+	proto.RegisterEnum("protomsg.Config_LogSepTime", Config_LogSepTime_name, Config_LogSepTime_value)
 }

@@ -1,0 +1,13 @@
+package protomsg;
+
+message DataMsg {
+	enum Type {
+		EVENT = 0;
+		OP = 1;
+		WRONG_OP_CODE = 2;
+	}
+	required Type type = 1;
+	required int32 code = 2;
+	required bytes data = 3;
+	optional uint32 op_serial = 4;	// type = OP
+}

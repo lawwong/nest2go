@@ -7,6 +7,9 @@ import (
 
 const UuidSize = 16
 
+var ErrInvalidLength = fmt.Errorf("wrong length")
+var empty = Uuid{}
+
 // create a new uuid v4
 func New() *Uuid {
 	u := Rand()
@@ -27,7 +30,7 @@ func Rand() Uuid {
 
 func FromByteSlice(src []byte) (u Uuid, err error) {
 	if l := len(src); l != UuidSize {
-		err = Error(fmt.Sprint("[uuid.ByteSlice] got len(src)=", l, " not ", UuidSize))
+		err = ErrInvalidLength
 		return
 	}
 	for i := 0; i < UuidSize; i++ {
@@ -46,8 +49,6 @@ func (u Uuid) ByteSlice() []byte {
 	return u[:]
 }
 
-type Error string
-
-func (e Error) Error() string {
-	return string(e)
+func (u Uuid) IsEmpty() bool {
+	return u == empty
 }

@@ -1,4 +1,4 @@
-package nest2go
+package log
 
 import (
 	"fmt"

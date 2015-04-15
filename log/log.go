@@ -1,4 +1,4 @@
-package nest2go
+package log
 
 import (
 	"fmt"
@@ -14,6 +14,7 @@ const (
 	LOG_LEVEL_INFO
 	LOG_LEVEL_WARN
 	LOG_LEVEL_ERROR
+	LOG_LEVEL_NONE
 )
 
 // Logging level strings
@@ -34,7 +35,8 @@ type Logger interface {
 	Warnf(format string, args ...interface{})
 	Errorf(format string, args ...interface{})
 
-	Close()
+	Level() LogLevel
+	SetLev(l LogLevel)
 }
 
 type LogRecord struct {

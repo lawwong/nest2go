@@ -1,67 +1,37 @@
 package nest2go
 
 import (
-	"github.com/golang/protobuf/proto"
-	. "github.com/lawwong/nest2go/protomsg"
-	"os"
+	"fmt"
+	"github.com/lawwong/nest2go/log"
+	"strings"
 )
 
-var DefaultServer *Server
+type Signal struct{}
 
-func init() {
-	DefaultServer = NewServer()
-}
+var SIGNAL = Signal{}
 
-func HandleSetuper(typeName string, setuper Setuper) {
-	DefaultServer.HandleSetuper(typeName, setuper)
-}
+// Errors introduced by the nest2go server.
+var (
+	ErrInvalidArgument       = fmt.Errorf("invalid argument")
+	ErrMultipleRegistrations = fmt.Errorf("multiple registrations")
+	ErrServiceClosed         = fmt.Errorf("service closed")
+	ErrHandlerNotFound       = fmt.Errorf("app handler not found")
+	ErrPortNotFound          = fmt.Errorf("port not found")
+	ErrAppNotFound           = fmt.Errorf("app not found")
+)
 
-func HandleSetuperFunc(typeName string, setuperFunc SetuperFunc) {
-	DefaultServer.HandleSetuperFunc(typeName, setuperFunc)
-}
-
-func LoadServerConfigFile(filePath string) error {
-	return DefaultServer.LoadConfigFile(filePath)
-}
-
-func SaveServerConfigFile(filePath string) error {
-	return DefaultServer.SaveConfigFile(filePath)
-}
-
-func GetServerConfigFromFile(filePath string, out *Config) (err error) {
-	f, err := os.Open(filePath)
-	if err != nil {
+func printErr(log *log.FileLogger, err *error, funcName string, args ...interface{}) {
+	if log == nil {
 		return
 	}
-	defer f.Close()
-
-	fs, err := f.Stat()
-	if err != nil {
-		return
+	argsStrs := make([]string, len(args))
+	for i, arg := range args {
+		argsStrs[i] = fmt.Sprintf("%v", arg)
 	}
-
-	data := make([]byte, fs.Size())
-	_, err = f.Read(data)
-	if err != nil {
-		return
+	argsStr := strings.Join(argsStrs, ",")
+	if err != nil && *err != nil {
+		log.Warnf("%s(%s) fail! %v", funcName, argsStr, *err)
+	} else {
+		log.Infof("%s(%s) ok!", funcName, argsStr)
 	}
-
-	err = proto.UnmarshalText(string(data), out)
-	return
-}
-
-func ServerConfig() *Config {
-	return DefaultServer.Config()
-}
-
-func UpdateServerConfig() (*Config, error) {
-	return DefaultServer.UpdateConfig()
-}
-
-func SetServerConfig(conf *Config) error {
-	return DefaultServer.SetConfig(conf)
-}
-
-func Serve() error {
-	return DefaultServer.Serve()
 }

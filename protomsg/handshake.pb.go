@@ -52,8 +52,9 @@ type HandshakeReq struct {
 	App       *string            `protobuf:"bytes,2,req,name=app" json:"app,omitempty"`
 	Challenge *int32             `protobuf:"varint,3,req,name=challenge" json:"challenge,omitempty"`
 	Session   []byte             `protobuf:"bytes,4,opt,name=session" json:"session,omitempty"`
-	UtcTime   *int64             `protobuf:"varint,5,opt,name=utc_time" json:"utc_time,omitempty"`
-	// used when port rsa has set
+	// prevent replay attack, start with 0
+	SerialNum *uint32 `protobuf:"varint,5,opt,name=serial_num" json:"serial_num,omitempty"`
+	// used when port rsa has set, AES CTR any key length
 	AesKey           []byte `protobuf:"bytes,6,opt,name=aes_key" json:"aes_key,omitempty"`
 	AesIv            []byte `protobuf:"bytes,7,opt,name=aes_iv" json:"aes_iv,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
@@ -91,9 +92,9 @@ func (m *HandshakeReq) GetSession() []byte {
 	return nil
 }
 
-func (m *HandshakeReq) GetUtcTime() int64 {
-	if m != nil && m.UtcTime != nil {
-		return *m.UtcTime
+func (m *HandshakeReq) GetSerialNum() uint32 {
+	if m != nil && m.SerialNum != nil {
+		return *m.SerialNum
 	}
 	return 0
 }
