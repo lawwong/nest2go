@@ -7,16 +7,15 @@ message HandshakeReq {
 		AGENT = 2;
 	}
 	required Mode mode = 1;
-	required string app = 2;
-	required int32 challenge = 3;
+	required int32 challenge = 2;
 
-	optional bytes session = 4;	// mode = AGENT
+	optional bytes session = 3;	// mode = AGENT
 	// prevent replay attack, start with 0
-	optional uint32 serial_num = 5;	// mode = AGENT
+	optional int32 serial_num = 4;	// mode = AGENT
 
 	// used when port rsa has set, AES CTR any key length
-	optional bytes aes_key = 6; // mode = PEER/NEW_AGENT
-	optional bytes aes_iv = 7;
+	optional bytes aes_key = 5; // mode = PEER/NEW_AGENT
+	optional bytes aes_iv = 6;
 }
 
 message HandshakeRes {

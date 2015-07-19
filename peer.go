@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"github.com/golang/protobuf/proto"
 	"github.com/gorilla/websocket"
+	. "github.com/lawwong/nest2go/closable"
+	. "github.com/lawwong/nest2go/datapkg"
 	. "github.com/lawwong/nest2go/protomsg"
 	"github.com/lawwong/nest2go/uuid"
 	"time"
@@ -23,15 +25,27 @@ type PeerBase struct {
 	decodeStream cipher.Stream
 	encodeStream cipher.Stream
 
-	opSerial uint32
-
-	eMux *eventMux
-	oMux *opReqMux
+	eventChan chan EventData
+	opChan    chan OpRequest
 
 	writeMsg chan []byte
 	writeErr chan error
 
-	*closable
+	Closable
+}
+
+func (p *PeerBase) EventChan() <-chan EventData {
+	if p != nil {
+		return p.eventChan
+	}
+	return nil
+}
+
+func (p *PeerBase) OpChan() <-chan OpRequest {
+	if p != nil {
+		return p.opChan
+	}
+	return nil
 }
 
 func newPeerBase(ws *websocket.Conn, app *AppBase, privateKey *rsa.PrivateKey) *PeerBase {
@@ -39,12 +53,15 @@ func newPeerBase(ws *websocket.Conn, app *AppBase, privateKey *rsa.PrivateKey) *
 		ws:  ws,
 		app: app,
 
+		eventChan: make(chan EventData),
+		opChan:    make(chan OpRequest),
+
 		writeMsg: make(chan []byte),
 		writeErr: make(chan error),
 
-		closable: newClosable(),
+		Closable: MakeClosable(),
 	}
-	p.HandleCloseFunc(func() {})
+	p.HandleClose(nil)
 	go p.runHandshake(privateKey)
 	return p
 }
@@ -52,8 +69,8 @@ func newPeerBase(ws *websocket.Conn, app *AppBase, privateKey *rsa.PrivateKey) *
 func (p *PeerBase) runHandshake(privateKey *rsa.PrivateKey) {
 	var data []byte
 	var err error
-	var notifyAppFunc func()
-	handshakeOk := make(chan Signal)
+	var notifyAppFunc func(*PeerBase)
+	handshakeOk := make(chan struct{})
 	defer printErr(p.app.log, &err, "PeerBase.runHandshake", p.ws.LocalAddr(), p.ws.RemoteAddr())
 	defer func() {
 		if err != nil {
@@ -93,11 +110,11 @@ func (p *PeerBase) runHandshake(privateKey *rsa.PrivateKey) {
 		// switch mode
 		switch hsReq.GetMode() {
 		case HandshakeReq_PEER:
-			p.eMux = newEventMux()
-			p.oMux = newOpReqMux()
+			//p.eMux = newEventMux()
+			//p.oMux = newOpReqMux()
 
 			// notify new peer to app
-			notifyAppFunc = func() {
+			notifyAppFunc = func(p *PeerBase) {
 				select {
 				case p.app.onpeer <- p:
 				case <-p.app.CloseChan():
@@ -117,10 +134,10 @@ func (p *PeerBase) runHandshake(privateKey *rsa.PrivateKey) {
 				hsRes.AesKey = p.decodeKey
 			}
 		case HandshakeReq_NEW_AGENT:
-			agent := p.app.newAgent()
-			agent.setPeer(p)
+			agent := p.app.newAgent(p)
+			//agent.setPeer(p)
 			// notify new agent to app
-			notifyAppFunc = func() {
+			notifyAppFunc = func(p *PeerBase) {
 				select {
 				case p.app.onagent <- agent:
 				case <-p.app.CloseChan():
@@ -200,7 +217,7 @@ func (p *PeerBase) runHandshake(privateKey *rsa.PrivateKey) {
 
 		if notifyAppFunc != nil {
 			// app can handle event/op, send event/op, close peer/agent
-			notifyAppFunc()
+			notifyAppFunc(p)
 		}
 
 		// try send handshake response
@@ -215,12 +232,7 @@ func (p *PeerBase) runReader() {
 	var data []byte
 	var err error
 	msg := new(DataMsg)
-	emptyData := make([]byte, 0)
 	for {
-		if err != nil {
-			p.app.log.Warnf("%q peer %q : %s", p.ws.LocalAddr(), p.ws.RemoteAddr(), err)
-		}
-
 		_, data, err = p.ws.ReadMessage()
 		if err != nil {
 			break
@@ -232,44 +244,37 @@ func (p *PeerBase) runReader() {
 
 		err = proto.Unmarshal(data, msg)
 		if err != nil {
+			p.app.log.Warnf("%q peer %q : %s", p.ws.LocalAddr(), p.ws.RemoteAddr(), err)
 			continue
 		}
 
 		switch msg.GetType() {
 		case DataMsg_EVENT:
-			if p.eMux == nil {
-				err = ErrAgentEventNotSupport
-			} else {
-				err = p.eMux.serveEvent(msg.GetCode(), msg.GetData())
-			}
+			p.eventChan <- MakeEventData(
+				msg.GetCode(),
+				msg.GetData(),
+			)
 		case DataMsg_OP:
-			err = p.oMux.serveOpReq(p, msg.GetCode(), msg.GetOpSerial(), msg.GetData())
-			if err != nil {
-				*msg = DataMsg{
-					Type:     DataMsg_WRONG_OP_CODE.Enum(),
-					Code:     proto.Int32(msg.GetCode()),
-					OpSerial: proto.Uint32(msg.GetOpSerial()),
-					Data:     emptyData,
-				}
-				data, _ = proto.Marshal(msg)
-				select {
-				case p.writeMsg <- data:
-					<-p.writeErr
-				case <-p.CloseChan():
-				}
-			}
+			p.opChan <- MakeOpRequest(
+				msg.GetCode(),
+				msg.GetSerial(),
+				msg.GetData(),
+				p,
+			)
 		}
 	}
 	p.app.log.Infof("%q peer %q : %s", p.ws.LocalAddr(), p.ws.RemoteAddr(), err)
+	close(p.eventChan)
+	close(p.opChan)
 	p.Close()
 }
 
 func (p *PeerBase) runWriter(hsResData []byte) {
-	var handshakeOk bool
+	//msgSlice =:= make([]*DataMsg, 0, 128)
 	for {
 		select {
 		case data := <-p.writeMsg:
-			if !handshakeOk {
+			if hsResData != nil {
 				// make sure handshake response sent before first message,
 				// and let application have a chance to handle event/op before
 				// client received handshake response,
@@ -280,9 +285,9 @@ func (p *PeerBase) runWriter(hsResData []byte) {
 					continue
 				} else {
 					hsResData = nil
-					handshakeOk = true
 				}
 			}
+
 			if len(data) == 0 {
 				p.writeErr <- nil
 			} else {
@@ -298,64 +303,95 @@ func (p *PeerBase) runWriter(hsResData []byte) {
 	close(p.writeErr)
 }
 
-func (p *PeerBase) WriteEvent(code int32, data []byte) error {
+func (p *PeerBase) SendEvent(code int32, data []byte) error {
 	msg := DataMsg{
-		Type: DataMsg_EVENT.Enum(),
-		Code: proto.Int32(code),
+		Type: DataMsgTypeEvent,
+		Code: &code,
 		Data: data,
 	}
-	data, err := proto.Marshal(&msg)
-	if err != nil {
-		return err
-	}
+	d, _ := proto.Marshal(&msg) // must succeed
+
 	select {
-	case p.writeMsg <- data:
+	case p.writeMsg <- d:
 		return <-p.writeErr
 	case <-p.CloseChan():
 		return ErrServiceClosed
 	}
 }
 
-func (p *PeerBase) WriteOpRes(code int32, serial uint32, data []byte) error {
+func (p *PeerBase) SendOpResponse(req OpRequest, resCode int32, data []byte) error {
+	var code int32 = req.Code()
+	var serial int32 = req.Serial()
+
 	msg := DataMsg{
-		Type:     DataMsg_OP.Enum(),
-		Code:     proto.Int32(code),
-		OpSerial: proto.Uint32(serial),
-		Data:     data,
+		Type:    DataMsgTypeOp,
+		Code:    &code,
+		ResCode: &resCode,
+		Data:    data,
 	}
-	data, err := proto.Marshal(&msg)
-	if err != nil {
-		return err
+
+	if serial = req.Serial(); serial != 0 {
+		msg.Serial = &serial
 	}
+
+	d, _ := proto.Marshal(&msg) // must succeed
+
 	select {
-	case p.writeMsg <- data:
+	case p.writeMsg <- d:
 		return <-p.writeErr
 	case <-p.CloseChan():
 		return ErrServiceClosed
 	}
-}
-
-func (p *PeerBase) HandleEvent(code int32, handler EventHandler) {
-	p.eMux.HandleEvent(code, handler)
-}
-
-func (p *PeerBase) HandleEventFunc(code int32, handler EventHandlerFunc) {
-	p.eMux.HandleEventFunc(code, handler)
-}
-
-func (p *PeerBase) HandleOpReq(code int32, handler OpReqHandler) {
-	p.oMux.HandleOpReq(code, handler)
-}
-
-func (p *PeerBase) HandleOpReqFunc(code int32, handler OpReqHandlerFunc) {
-	p.oMux.HandleOpReqFunc(code, handler)
 }
 
 func (p *PeerBase) HandleClose(handler CloseHandler) {
-	p.closable.HandleCloseFunc(func() {
+	p.Closable.HandleCloseFunc(func() {
 		if err := p.ws.Close(); err != nil {
 			p.app.log.Infof("%q peer %q closed. %s", p.ws.LocalAddr(), p.ws.RemoteAddr(), err)
 		}
-		handler.HandleClose()
+		if handler != nil {
+			handler.HandleClose()
+		}
 	})
+}
+
+func (p *PeerBase) HandleCloseFunc(handleFunc CloseHandlerFunc) {
+	p.HandleClose(CloseHandler(handleFunc))
+}
+
+func BroadcastEventByChan(peerChan <-chan *PeerBase, code int32, data []byte) {
+	if peerChan == nil {
+		return
+	}
+	go func() {
+		msg := DataMsg{
+			Type: DataMsgTypeEvent,
+			Code: proto.Int32(code),
+			Data: data,
+		}
+		d, _ := proto.Marshal(&msg) // must succeed
+		for p := range peerChan {
+			if p != nil {
+				go func(p *PeerBase) {
+					select {
+					case p.writeMsg <- d:
+						<-p.writeErr
+					case <-p.CloseChan():
+					}
+				}(p)
+			}
+		}
+	}()
+}
+
+func BroadcastEvent(peers []*PeerBase, code int32, data []byte) {
+	if len(peers) == 0 {
+		return
+	}
+	peerChan := make(chan *PeerBase)
+	BroadcastEventByChan(peerChan, code, data)
+	for _, p := range peers {
+		peerChan <- p
+	}
+	close(peerChan)
 }

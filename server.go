@@ -2,6 +2,7 @@ package nest2go
 
 import (
 	"github.com/golang/protobuf/proto"
+	. "github.com/lawwong/nest2go/closable"
 	. "github.com/lawwong/nest2go/log"
 	. "github.com/lawwong/nest2go/protomsg"
 	"os"
@@ -31,10 +32,7 @@ type Server struct {
 	appSetMut sync.RWMutex
 	appSet    map[string]*AppBase
 
-	closedMut sync.RWMutex
-	closed    bool
-
-	cloze chan Signal
+	Closable
 }
 
 func NewServer(rsaKeyPassword string) *Server {
@@ -46,8 +44,9 @@ func NewServer(rsaKeyPassword string) *Server {
 		portSet:   make(map[string]*port),
 		appSet:    make(map[string]*AppBase),
 
-		cloze: make(chan Signal),
+		Closable: MakeClosable(),
 	}
+	s.HandleClose(nil)
 	return s
 }
 
@@ -56,9 +55,9 @@ func (s *Server) Log() *FileLogger {
 }
 
 func (s *Server) HandleAppType(appType string, handler AppHandler) {
-	s.closedMut.RLock()
-	defer s.closedMut.RUnlock()
-	if s.closed {
+	s.RLockClosedMut()
+	defer s.RUnlockClosedMut()
+	if s.Closed() {
 		panic("nest2go: server closed")
 	}
 
@@ -83,9 +82,9 @@ func (s *Server) OpenPort(portConf *Config_Port) (err error) {
 	addr := portConf.GetAddr()
 	defer printErr(s.log, &err, "OpenPort", addr)
 
-	s.closedMut.RLock()
-	defer s.closedMut.RUnlock()
-	if s.closed {
+	s.RLockClosedMut()
+	defer s.RUnlockClosedMut()
+	if s.Closed() {
 		return ErrServiceClosed
 	}
 
@@ -106,18 +105,21 @@ func (s *Server) OpenPort(portConf *Config_Port) (err error) {
 
 	s.portSet[addr] = p
 	// remove port from portSet after port closed
-	go func(s *Server, p *port) {
-		<-p.CloseChan()
-		s.portSetMut.Lock()
-		defer s.portSetMut.Unlock()
-		addr := p.config.GetAddr()
-		if s.portSet[addr] == p {
-			delete(s.portSet, addr)
-		}
-		s.log.Infof("port %q closed", p.config.GetAddr())
-	}(s, p)
+	go s.runOnPortClosed(p)
 
 	return nil
+}
+
+// remove port from portSet after port closed
+func (s *Server) runOnPortClosed(p *port) {
+	<-p.CloseChan()
+	s.portSetMut.Lock()
+	defer s.portSetMut.Unlock()
+	addr := p.config.GetAddr()
+	if s.portSet[addr] == p {
+		delete(s.portSet, addr)
+	}
+	s.log.Infof("port %q closed", p.config.GetAddr())
 }
 
 // return nil if target port not found
@@ -147,9 +149,9 @@ func (s *Server) OpenApp(appConf *Config_App) (err error) {
 	appName := appConf.GetName()
 	defer printErr(s.log, &err, "OpenApp", appType, appName)
 
-	s.closedMut.RLock()
-	defer s.closedMut.RUnlock()
-	if s.closed {
+	s.RLockClosedMut()
+	defer s.RUnlockClosedMut()
+	if s.Closed() {
 		return ErrServiceClosed
 	}
 
@@ -172,18 +174,21 @@ func (s *Server) OpenApp(appConf *Config_App) (err error) {
 	// send app to app handler
 	go handler.HandleApp(app)
 	// remove app from appSet after app closed
-	go func(s *Server, a *AppBase) {
-		<-a.CloseChan()
-		s.appSetMut.Lock()
-		defer s.appSetMut.Unlock()
-		appName := a.config.GetName()
-		if s.appSet[appName] == a {
-			delete(s.appSet, appName)
-		}
-		s.log.Infof("app %q(%q) closed", a.config.GetName(), a.config.GetType())
-	}(s, app)
+	go s.runOnAppClosed(app)
 
 	return nil
+}
+
+// remove app from appSet after app closed
+func (s *Server) runOnAppClosed(a *AppBase) {
+	<-a.CloseChan()
+	s.appSetMut.Lock()
+	defer s.appSetMut.Unlock()
+	appName := a.config.GetName()
+	if s.appSet[appName] == a {
+		delete(s.appSet, appName)
+	}
+	s.log.Infof("app %q(%q) closed", a.config.GetName(), a.config.GetType())
 }
 
 func (s *Server) CloseApp(appName string) error {
@@ -238,9 +243,9 @@ func (s *Server) LoadConfig(config *Config) {
 	var err error
 	defer printErr(s.log, &err, "LoadConfig")
 
-	s.closedMut.RLock()
-	defer s.closedMut.RUnlock()
-	if s.closed {
+	s.RLockClosedMut()
+	defer s.RUnlockClosedMut()
+	if s.Closed() {
 		err = ErrServiceClosed
 		return
 	}
@@ -258,8 +263,8 @@ func (s *Server) LoadConfig(config *Config) {
 }
 
 func (s *Server) CurrentConfig() *Config {
-	s.closedMut.RLock()
-	defer s.closedMut.RUnlock()
+	s.RLockClosedMut()
+	defer s.RUnlockClosedMut()
 
 	s.portSetMut.RLock()
 	var ports []*Config_Port
@@ -297,9 +302,9 @@ func (s *Server) CurrentConfig() *Config {
 func (s *Server) SaveCurrentConfigFile(filePath string) (err error) {
 	defer printErr(s.log, &err, "SaveCurrentConfigFile", filePath)
 
-	s.closedMut.RLock()
-	defer s.closedMut.RUnlock()
-	if s.closed {
+	s.RLockClosedMut()
+	defer s.RUnlockClosedMut()
+	if s.Closed() {
 		return ErrServiceClosed
 	}
 
@@ -341,46 +346,43 @@ func (s *Server) findApp(appName string) *AppBase {
 	return s.appSet[appName]
 }
 
-func (s *Server) Close() error {
-	s.closedMut.Lock()
-	defer s.closedMut.Unlock()
-	if s.closed {
-		return ErrServiceClosed
+func (s *Server) onClose() {
+	var wg sync.WaitGroup
+	// close all ports
+	s.portSetMut.RLock()
+	wg.Add(len(s.portSet))
+	for _, p := range s.portSet {
+		go func(p *port) {
+			p.Close()
+			<-p.CloseChan()
+			wg.Done()
+		}(p)
 	}
-	s.closed = true
-
-	go func() {
-		var wg sync.WaitGroup
-		// close all ports
-		s.portSetMut.RLock()
-		wg.Add(len(s.portSet))
-		for _, p := range s.portSet {
-			go func(p *port) {
-				p.Close()
-				<-p.CloseChan()
-				wg.Done()
-			}(p)
-		}
-		s.portSetMut.RUnlock()
-		wg.Wait()
-		// close all apps
-		s.appSetMut.RLock()
-		wg.Add(len(s.appSet))
-		for _, app := range s.appSet {
-			go func(a *AppBase) {
-				a.Close()
-				<-a.CloseChan()
-				wg.Done()
-			}(app)
-		}
-		s.appSetMut.RUnlock()
-		wg.Wait()
-
-		close(s.cloze)
-	}()
-	return nil
+	s.portSetMut.RUnlock()
+	wg.Wait()
+	// close all apps
+	s.appSetMut.RLock()
+	wg.Add(len(s.appSet))
+	for _, app := range s.appSet {
+		go func(a *AppBase) {
+			a.Close()
+			<-a.CloseChan()
+			wg.Done()
+		}(app)
+	}
+	s.appSetMut.RUnlock()
+	wg.Wait()
 }
 
-func (s *Server) CloseChan() <-chan Signal {
-	return s.cloze
+func (s *Server) HandleClose(handler CloseHandler) {
+	s.Closable.HandleCloseFunc(func() {
+		s.onClose()
+		if handler != nil {
+			handler.HandleClose()
+		}
+	})
+}
+
+func (s *Server) HandleCloseFunc(handleFunc CloseHandlerFunc) {
+	s.HandleClose(CloseHandler(handleFunc))
 }

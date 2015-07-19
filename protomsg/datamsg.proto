@@ -4,10 +4,15 @@ message DataMsg {
 	enum Type {
 		EVENT = 0;
 		OP = 1;
-		WRONG_OP_CODE = 2;
 	}
+
 	required Type type = 1;
 	required int32 code = 2;
-	required bytes data = 3;
-	optional uint32 op_serial = 4;	// type = OP
+	optional int32 serial = 3;
+	optional int32 res_code = 4;
+	optional bytes data = 5;
+}
+
+message DataPkg {
+	repeated DataMsg msg = 1;
 }

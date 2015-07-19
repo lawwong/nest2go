@@ -1,23 +1,20 @@
 package nest2go
 
 import (
+	"errors"
 	"fmt"
 	"github.com/lawwong/nest2go/log"
 	"strings"
 )
 
-type Signal struct{}
-
-var SIGNAL = Signal{}
-
 // Errors introduced by the nest2go server.
 var (
-	ErrInvalidArgument       = fmt.Errorf("invalid argument")
-	ErrMultipleRegistrations = fmt.Errorf("multiple registrations")
-	ErrServiceClosed         = fmt.Errorf("service closed")
-	ErrHandlerNotFound       = fmt.Errorf("app handler not found")
-	ErrPortNotFound          = fmt.Errorf("port not found")
-	ErrAppNotFound           = fmt.Errorf("app not found")
+	ErrInvalidArgument       = errors.New("invalid argument")
+	ErrMultipleRegistrations = errors.New("multiple registrations")
+	ErrServiceClosed         = errors.New("service closed")
+	ErrHandlerNotFound       = errors.New("app handler not found")
+	ErrPortNotFound          = errors.New("port not found")
+	ErrAppNotFound           = errors.New("app not found")
 )
 
 func printErr(log *log.FileLogger, err *error, funcName string, args ...interface{}) {

@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"github.com/gorilla/websocket"
+	. "github.com/lawwong/nest2go/closable"
 	. "github.com/lawwong/nest2go/log"
 	. "github.com/lawwong/nest2go/protomsg"
 	"github.com/stretchr/graceful"
@@ -20,9 +21,9 @@ import (
 var appNameReg = regexp.MustCompile("^/([^/]*)")
 
 var wsUpgrader = &websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	CheckOrigin:     func(r *http.Request) bool { return true },
+	//ReadBufferSize:  1024,
+	//WriteBufferSize: 1024,
+	CheckOrigin: func(*http.Request) bool { return true },
 }
 
 type port struct {
@@ -36,52 +37,15 @@ type port struct {
 	rsaPK    *rsa.PrivateKey
 	wsServer *graceful.Server
 
-	*closable
+	Closable
 }
 
 func newPort(s *Server, config *Config_Port) (p *port, err error) {
 	// load rsa private key if pem file name is set
 	var pk *rsa.PrivateKey
 	if fname := config.GetRsaKeyPem(); fname != "" {
-		var f *os.File
-		f, err = os.Open(fname)
-		if err != nil {
+		if pk, err = LoadPrivateKeyFromFile(fname, s.rsaPwd); err != nil {
 			return
-		}
-		defer f.Close()
-
-		var fs os.FileInfo
-		fs, err = f.Stat()
-		if err != nil {
-			return
-		}
-
-		data := make([]byte, fs.Size())
-		_, err = f.Read(data)
-		if err != nil {
-			return
-		}
-
-		pblock, _ := pem.Decode(data)
-		if pblock == nil {
-			err = fmt.Errorf("pem.Decode fail!")
-			return
-		}
-
-		var der []byte
-		if len(pblock.Headers) == 0 || s.rsaPwd == "" {
-			// no header found! used as plain der
-			der = pblock.Bytes
-		} else {
-			der, err = x509.DecryptPEMBlock(pblock, []byte(s.rsaPwd))
-			if err != nil {
-				return nil, err
-			}
-		}
-
-		pk, err = x509.ParsePKCS1PrivateKey(der)
-		if err != nil {
-			return nil, err
 		}
 	}
 
@@ -104,15 +68,11 @@ func newPort(s *Server, config *Config_Port) (p *port, err error) {
 				Handler: mux,
 			},
 		},
-		closable: newClosable(),
+		Closable: MakeClosable(),
 	}
-	p.HandleCloseFunc(func() {})
+	p.HandleClose(nil)
 	go p.runServer()
 	return p, nil
-}
-
-func (p *port) Log() *FileLogger {
-	return p.log
 }
 
 func (p *port) runServer() {
@@ -180,8 +140,55 @@ func (p *port) findApp(appName string) *AppBase {
 }
 
 func (p *port) HandleClose(handler CloseHandler) {
-	p.closable.HandleCloseFunc(func() {
+	p.Closable.HandleCloseFunc(func() {
 		p.wsServer.Stop(0)
-		handler.HandleClose()
+		<-p.wsServer.StopChan()
+		if handler != nil {
+			handler.HandleClose()
+		}
 	})
+}
+
+func (p *port) HandleCloseFunc(handleFunc CloseHandlerFunc) {
+	p.HandleClose(CloseHandler(handleFunc))
+}
+
+func LoadPrivateKeyFromFile(filename string, pwd string) (pk *rsa.PrivateKey, err error) {
+	var f *os.File
+	f, err = os.Open(filename)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	var fs os.FileInfo
+	fs, err = f.Stat()
+	if err != nil {
+		return
+	}
+
+	data := make([]byte, fs.Size())
+	_, err = f.Read(data)
+	if err != nil {
+		return
+	}
+
+	pblock, _ := pem.Decode(data)
+	if pblock == nil {
+		err = fmt.Errorf("pem.Decode fail!")
+		return
+	}
+
+	var der []byte
+	if len(pblock.Headers) == 0 || pwd == "" {
+		// no header found! used as plain der
+		der = pblock.Bytes
+	} else {
+		der, err = x509.DecryptPEMBlock(pblock, []byte(pwd))
+		if err != nil {
+			return
+		}
+	}
+
+	return x509.ParsePKCS1PrivateKey(der)
 }

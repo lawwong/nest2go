@@ -14,20 +14,17 @@ var _ = math.Inf
 type DataMsg_Type int32
 
 const (
-	DataMsg_EVENT         DataMsg_Type = 0
-	DataMsg_OP            DataMsg_Type = 1
-	DataMsg_WRONG_OP_CODE DataMsg_Type = 2
+	DataMsg_EVENT DataMsg_Type = 0
+	DataMsg_OP    DataMsg_Type = 1
 )
 
 var DataMsg_Type_name = map[int32]string{
 	0: "EVENT",
 	1: "OP",
-	2: "WRONG_OP_CODE",
 }
 var DataMsg_Type_value = map[string]int32{
-	"EVENT":         0,
-	"OP":            1,
-	"WRONG_OP_CODE": 2,
+	"EVENT": 0,
+	"OP":    1,
 }
 
 func (x DataMsg_Type) Enum() *DataMsg_Type {
@@ -50,8 +47,9 @@ func (x *DataMsg_Type) UnmarshalJSON(data []byte) error {
 type DataMsg struct {
 	Type             *DataMsg_Type `protobuf:"varint,1,req,name=type,enum=protomsg.DataMsg_Type" json:"type,omitempty"`
 	Code             *int32        `protobuf:"varint,2,req,name=code" json:"code,omitempty"`
-	Data             []byte        `protobuf:"bytes,3,req,name=data" json:"data,omitempty"`
-	OpSerial         *uint32       `protobuf:"varint,4,opt,name=op_serial" json:"op_serial,omitempty"`
+	Serial           *int32        `protobuf:"varint,3,opt,name=serial" json:"serial,omitempty"`
+	ResCode          *int32        `protobuf:"varint,4,opt,name=res_code" json:"res_code,omitempty"`
+	Data             []byte        `protobuf:"bytes,5,opt,name=data" json:"data,omitempty"`
 	XXX_unrecognized []byte        `json:"-"`
 }
 
@@ -73,6 +71,20 @@ func (m *DataMsg) GetCode() int32 {
 	return 0
 }
 
+func (m *DataMsg) GetSerial() int32 {
+	if m != nil && m.Serial != nil {
+		return *m.Serial
+	}
+	return 0
+}
+
+func (m *DataMsg) GetResCode() int32 {
+	if m != nil && m.ResCode != nil {
+		return *m.ResCode
+	}
+	return 0
+}
+
 func (m *DataMsg) GetData() []byte {
 	if m != nil {
 		return m.Data
@@ -80,11 +92,20 @@ func (m *DataMsg) GetData() []byte {
 	return nil
 }
 
-func (m *DataMsg) GetOpSerial() uint32 {
-	if m != nil && m.OpSerial != nil {
-		return *m.OpSerial
+type DataPkg struct {
+	Msg              []*DataMsg `protobuf:"bytes,1,rep,name=msg" json:"msg,omitempty"`
+	XXX_unrecognized []byte     `json:"-"`
+}
+
+func (m *DataPkg) Reset()         { *m = DataPkg{} }
+func (m *DataPkg) String() string { return proto.CompactTextString(m) }
+func (*DataPkg) ProtoMessage()    {}
+
+func (m *DataPkg) GetMsg() []*DataMsg {
+	if m != nil {
+		return m.Msg
 	}
-	return 0
+	return nil
 }
 
 func init() {

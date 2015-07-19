@@ -49,14 +49,13 @@ func (x *HandshakeReq_Mode) UnmarshalJSON(data []byte) error {
 
 type HandshakeReq struct {
 	Mode      *HandshakeReq_Mode `protobuf:"varint,1,req,name=mode,enum=protomsg.HandshakeReq_Mode" json:"mode,omitempty"`
-	App       *string            `protobuf:"bytes,2,req,name=app" json:"app,omitempty"`
-	Challenge *int32             `protobuf:"varint,3,req,name=challenge" json:"challenge,omitempty"`
-	Session   []byte             `protobuf:"bytes,4,opt,name=session" json:"session,omitempty"`
+	Challenge *int32             `protobuf:"varint,2,req,name=challenge" json:"challenge,omitempty"`
+	Session   []byte             `protobuf:"bytes,3,opt,name=session" json:"session,omitempty"`
 	// prevent replay attack, start with 0
-	SerialNum *uint32 `protobuf:"varint,5,opt,name=serial_num" json:"serial_num,omitempty"`
+	SerialNum *int32 `protobuf:"varint,4,opt,name=serial_num" json:"serial_num,omitempty"`
 	// used when port rsa has set, AES CTR any key length
-	AesKey           []byte `protobuf:"bytes,6,opt,name=aes_key" json:"aes_key,omitempty"`
-	AesIv            []byte `protobuf:"bytes,7,opt,name=aes_iv" json:"aes_iv,omitempty"`
+	AesKey           []byte `protobuf:"bytes,5,opt,name=aes_key" json:"aes_key,omitempty"`
+	AesIv            []byte `protobuf:"bytes,6,opt,name=aes_iv" json:"aes_iv,omitempty"`
 	XXX_unrecognized []byte `json:"-"`
 }
 
@@ -69,13 +68,6 @@ func (m *HandshakeReq) GetMode() HandshakeReq_Mode {
 		return *m.Mode
 	}
 	return HandshakeReq_PEER
-}
-
-func (m *HandshakeReq) GetApp() string {
-	if m != nil && m.App != nil {
-		return *m.App
-	}
-	return ""
 }
 
 func (m *HandshakeReq) GetChallenge() int32 {
@@ -92,7 +84,7 @@ func (m *HandshakeReq) GetSession() []byte {
 	return nil
 }
 
-func (m *HandshakeReq) GetSerialNum() uint32 {
+func (m *HandshakeReq) GetSerialNum() int32 {
 	if m != nil && m.SerialNum != nil {
 		return *m.SerialNum
 	}

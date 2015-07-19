@@ -1,82 +1,116 @@
 package nest2go
 
 import (
-	"bytes"
+	. "github.com/lawwong/nest2go/closable"
+	. "github.com/lawwong/nest2go/datapkg"
 	"github.com/lawwong/nest2go/uuid"
-	"sync"
 )
 
-type agentOpInfo struct {
-	code   int32
-	serial uint32
-	data   []byte
+type agentResInfo struct {
+	req     OpRequest
+	resCode int32
+	data    []byte
 }
 
 type AgentBase struct {
 	session       *uuid.Uuid
 	app           *AppBase
-	serial        uint32 // only access in *AppBase.verifyAgent
+	serial        int32 // only access in *AppBase.verifyAgent
 	lastApplyTime int64
 
-	peer      *PeerBase
-	peerOpMux *opReqMux
-
-	cacheMut     sync.RWMutex
-	cacheReq     agentOpInfo
-	cacheResData []byte
+	peer *PeerBase
 
 	setpeer chan *PeerBase
-	writeop chan agentOpInfo
+	opChan  chan OpRequest
 
-	*closable
+	writeOp chan agentResInfo
+
+	Closable
 }
 
-func newAgentBase(session *uuid.Uuid, app *AppBase) *AgentBase {
+func (a *AgentBase) OpChan() <-chan OpRequest {
+	if a != nil {
+		return a.opChan
+	}
+	return nil
+}
+
+func newAgentBase(session *uuid.Uuid, app *AppBase, peer *PeerBase) *AgentBase {
 	a := &AgentBase{
-		session:   session,
-		app:       app,
-		peerOpMux: newOpReqMux(),
+		session: session,
+		app:     app,
+
+		opChan: make(chan OpRequest),
 
 		setpeer: make(chan *PeerBase),
-		writeop: make(chan agentOpInfo),
+		writeOp: make(chan agentResInfo),
 
-		closable: newClosable(),
+		Closable: MakeClosable(),
 	}
-	go a.run()
+	a.HandleClose(nil)
+	go a.run(peer)
 	return a
 }
 
-func (a *AgentBase) run() {
-	var peer *PeerBase
+func (a *AgentBase) run(peer *PeerBase) {
+	// peer initial
+	encodeKey := peer.encodeKey
+	decodeKey := peer.decodeKey
+	eventChan := peer.EventChan()
+	opChan := peer.OpChan()
+
+	var resInfoCache agentResInfo
+	//var resMsgCache []byte
+
 	for {
 		select {
 		case newPeer := <-a.setpeer:
-			if peer != nil {
-				newPeer.encodeKey = peer.encodeKey
-				newPeer.decodeKey = peer.decodeKey
-				newPeer.opSerial = peer.opSerial
-				peer.Close()
-			}
 			if newPeer != nil {
-				newPeer.oMux = a.peerOpMux
-				// peer remover
-				go func(cloze <-chan struct{}) {
-					<-cloze
-					a.setPeer(nil)
-				}(peer.CloseChan())
+				// peer replaced
+				newPeer.encodeKey = encodeKey
+				newPeer.decodeKey = decodeKey
+				eventChan = newPeer.EventChan()
+				opChan = newPeer.OpChan()
+			} else {
+				// peer removed
+				eventChan = nil
+				opChan = nil
 			}
-			peer = newPeer
-		case info := <-a.writeop:
-			// cache response
-			a.cacheMut.Lock()
-			if a.cacheReq.code == info.code &&
-				a.cacheReq.serial == info.serial {
-				a.cacheResData = info.data
-			}
-			a.cacheMut.Unlock()
 
 			if peer != nil {
-				peer.WriteOpRes(info.code, info.serial, info.data)
+				peer.Close()
+			}
+
+			peer = newPeer
+		case _, ok := <-eventChan:
+			if !ok {
+				eventChan = nil
+			}
+			// not support
+		case opReq, ok := <-opChan:
+			if !ok {
+				opChan = nil
+			} else {
+				// read request from peer
+				opReq.SetResponseSender(a)
+				if opReq.IsEqual(resInfoCache.req) {
+					if peer != nil { // peer must not be nil?
+						peer.SendOpResponse(resInfoCache.req, resInfoCache.resCode, resInfoCache.data)
+					}
+				} else {
+					select {
+					case a.opChan <- opReq:
+					case <-a.CloseChan():
+						break
+					}
+				}
+			}
+		case resInfo := <-a.writeOp:
+			resInfoCache = resInfo
+			// TODO : serialized cache??
+
+			if peer != nil {
+				peer.SendOpResponse(resInfo.req, resInfo.resCode, resInfo.data)
 			}
 		case <-a.CloseChan():
 			break
@@ -92,12 +126,12 @@ func (a *AgentBase) setPeer(p *PeerBase) {
 	}
 }
 
-func (a *AgentBase) WriteOpRes(code int32, serial uint32, data []byte) error {
+func (a *AgentBase) SendOpResponse(req OpRequest, resCode int32, data []byte) error {
 	select {
-	case a.writeop <- agentOpInfo{
-		code:   code,
-		serial: serial,
-		data:   data,
+	case a.writeOp <- agentResInfo{
+		req,
+		resCode,
+		data,
 	}:
 		return nil
 	case <-a.CloseChan():
@@ -105,52 +139,15 @@ func (a *AgentBase) WriteOpRes(code int32, serial uint32, data []byte) error {
 	}
 }
 
-func (a *AgentBase) HandleOpReq(code int32, handler OpReqHandler) {
-	a.peerOpMux.HandleOpReqFunc(
-		code,
-		func(res *OpResWriter, data []byte) {
-			a.cacheMut.Lock()
-			cacheReq := a.cacheReq
-			cacheResData := a.cacheResData
+//func (a *AgentBase) HandleClose(handler CloseHandler) {
+//	a.closable.HandleCloseFunc(func() {
+//		a.setPeer(nil)
+//		if handler != nil {
+//			handler.HandleClose()
+//		}
+//	})
+//}
 
-			if res.serial > cacheReq.serial {
-				// write cache
-				a.cacheReq = agentOpInfo{
-					code:   res.code,
-					serial: res.serial,
-					data:   data,
-				}
-				a.cacheResData = nil
-				a.cacheMut.Unlock()
-				// hijack
-				res.rw = a
-
-				handler.ServeOpReq(res, data)
-			} else {
-				a.cacheMut.Unlock()
-				if res.serial == cacheReq.serial {
-					if res.code != cacheReq.code {
-						a.app.log.Warnf("wrong operation code")
-					} else if cacheResData == nil || !bytes.Equal(data, cacheReq.data) {
-						a.app.log.Warnf("wrong operation data")
-					} else {
-						a.WriteOpRes(res.code, res.serial, cacheResData)
-					}
-				} else {
-					a.app.log.Warnf("wrong operation serial")
-				}
-			}
-		},
-	)
-}
-
-func (a *AgentBase) HandleOpReqFunc(code int32, handler OpReqHandlerFunc) {
-	a.peerOpMux.HandleOpReqFunc(code, handler)
-}
-
-func (a *AgentBase) HandleClose(handler CloseHandler) {
-	a.closable.HandleCloseFunc(func() {
-		a.setPeer(nil)
-		handler.HandleClose()
-	})
-}
+//func (a *AgentBase) HandleCloseFunc(handleFunc CloseHandlerFunc) {
+//	a.HandleClose(CloseHandler(handleFunc))
+//}

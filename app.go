@@ -2,6 +2,7 @@ package nest2go
 
 import (
 	"fmt"
+	. "github.com/lawwong/nest2go/closable"
 	. "github.com/lawwong/nest2go/log"
 	. "github.com/lawwong/nest2go/protomsg"
 	"github.com/lawwong/nest2go/uuid"
@@ -25,7 +26,7 @@ type AppBase struct {
 	onpeer  chan *PeerBase
 	onagent chan *AgentBase
 
-	*closable
+	Closable
 }
 
 func newAppBase(server *Server, config *Config_App) *AppBase {
@@ -37,7 +38,7 @@ func newAppBase(server *Server, config *Config_App) *AppBase {
 		onpeer:  make(chan *PeerBase),
 		onagent: make(chan *AgentBase),
 
-		closable: newClosable(),
+		Closable: MakeClosable(),
 	}
 	// FIXME : what if safeFileName returns empty?
 	a.log.SetFilePath(filepath.Join(server.log.Dir(), "app"), safeFileName(config.GetName()))
@@ -84,31 +85,31 @@ func (a *AppBase) Server() *Server {
 	return a.server
 }
 
-func (a *AppBase) newAgent() *AgentBase {
+func (a *AppBase) newAgent(peer *PeerBase) *AgentBase {
 	a.agentSetMut.Lock()
 	defer a.agentSetMut.Unlock()
 
-	var id *uuid.Uuid
+	var session *uuid.Uuid
 	for {
-		if id = uuid.New(); a.agentSet[*id] == nil {
+		if session = uuid.New(); a.agentSet[*session] == nil {
 			break
 		}
 	}
 
-	agent := newAgentBase(id, a)
-	a.agentSet[*id] = agent
+	agent := newAgentBase(session, a, peer)
+	a.agentSet[*session] = agent
 
 	go func(cloze <-chan struct{}) {
 		<-cloze
 		a.agentSetMut.Lock()
 		defer a.agentSetMut.Unlock()
-		delete(a.agentSet, *id)
+		delete(a.agentSet, *session)
 	}(agent.CloseChan())
 
 	return agent
 }
 
-func (a *AppBase) verifyAgent(session *uuid.Uuid, serial uint32) (*AgentBase, error) {
+func (a *AppBase) verifyAgent(session *uuid.Uuid, serial int32) (*AgentBase, error) {
 	a.agentSetMut.RLock()
 	defer a.agentSetMut.RUnlock()
 
