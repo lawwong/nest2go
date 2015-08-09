@@ -104,9 +104,10 @@ func (p *PeerBase) runHandshake(privateKey *rsa.PrivateKey) {
 			return
 		}
 		// build HandshakeRes
-		hsRes := new(HandshakeRes)
-		// client should test if it's equal
-		hsRes.Challenge = proto.Int32(hsReq.GetChallenge())
+		hsRes := &HandshakeRes{
+			// client should test if it's equal
+			Challenge: hsReq.Challenge,
+		}
 		// switch mode
 		switch hsReq.GetMode() {
 		case HandshakeReq_PEER:
@@ -213,18 +214,18 @@ func (p *PeerBase) runHandshake(privateKey *rsa.PrivateKey) {
 			p.encodeStream.XORKeyStream(data, data)
 		}
 
-		go p.runWriter(data)
+		err := p.ws.WriteMessage(websocket.BinaryMessage, data)
+		if err != nil {
+			return
+		}
+
+		go p.runReader()
+		go p.runWriter()
 
 		if notifyAppFunc != nil {
 			// app can handle event/op, send event/op, close peer/agent
 			notifyAppFunc(p)
 		}
-
-		// try send handshake response
-		p.writeMsg <- nil
-		<-p.writeErr
-
-		go p.runReader()
 	}
 }
 
@@ -269,25 +270,10 @@ func (p *PeerBase) runReader() {
 	p.Close()
 }
 
-func (p *PeerBase) runWriter(hsResData []byte) {
-	//msgSlice =:= make([]*DataMsg, 0, 128)
+func (p *PeerBase) runWriter() {
 	for {
 		select {
 		case data := <-p.writeMsg:
-			if hsResData != nil {
-				// make sure handshake response sent before first message,
-				// and let application have a chance to handle event/op before
-				// client received handshake response,
-				// hsResData should be encrypted if needed
-				err := p.ws.WriteMessage(websocket.BinaryMessage, hsResData)
-				if err != nil {
-					p.writeErr <- err
-					continue
-				} else {
-					hsResData = nil
-				}
-			}
-
 			if len(data) == 0 {
 				p.writeErr <- nil
 			} else {

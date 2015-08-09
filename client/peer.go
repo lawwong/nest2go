@@ -167,7 +167,6 @@ func (p *Peer) runReader() {
 }
 
 func (p *Peer) runWriter() {
-	//msgSlice =:= make([]*DataMsg, 0, 128)
 	for {
 		select {
 		case data := <-p.writeMsg:
